@@ -1,1 +1,0 @@
-En algún momento se han reseteado los datos que ya había introducido en el curso 2026-2027. La aplicación se había desplegado desde https://angelmicelti.github.io/PlanesProgramasV2/
