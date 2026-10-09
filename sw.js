@@ -1,4 +1,8 @@
-const CACHE_NAME = 'planes-programas-v2.25';
+// Versión "viva" de la aplicación: única fuente de verdad.
+// El banner de index.html la solicita al SW (mensaje GET_VERSION)
+// y el SW también la anuncia al activarse una nueva versión.
+const APP_VERSION = 'v2.25';
+const CACHE_NAME = 'planes-programas-' + APP_VERSION;
 const BASE_PATH = '/planesyprogramas/';
 
 const PRECACHE_URLS = [
@@ -49,7 +53,25 @@ self.addEventListener('activate', (event) => {
                     .map((name) => caches.delete(name))
             );
         }).then(() => self.clients.claim())
+          .then(() => announceVersion())
     );
+});
+
+// Anuncia la versión activa a todas las pestañas/ventanas de la PWA
+// (includeUncontrolled para alcanzar también a las que aún no controla)
+function announceVersion() {
+    return self.clients.matchAll({ includeUncontrolled: true }).then((clients) => {
+        clients.forEach((client) => {
+            client.postMessage({ type: 'APP_VERSION', version: APP_VERSION });
+        });
+    });
+}
+
+// Responde a la petición de versión desde la página (chip del banner)
+self.addEventListener('message', (event) => {
+    if (event.data && event.data.type === 'GET_VERSION' && event.source) {
+        event.source.postMessage({ type: 'APP_VERSION', version: APP_VERSION });
+    }
 });
 
 // Fetch: network-first strategy for app files, cache-first for CDN
