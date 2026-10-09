@@ -1,7 +1,7 @@
 // Versión "viva" de la aplicación: única fuente de verdad.
 // El banner de index.html la solicita al SW (mensaje GET_VERSION)
 // y el SW también la anuncia al activarse una nueva versión.
-const APP_VERSION = 'v2.25';
+const APP_VERSION = 'v2.26';
 const CACHE_NAME = 'planes-programas-' + APP_VERSION;
 const BASE_PATH = '/planesyprogramas/';
 
