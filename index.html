@@ -585,7 +585,7 @@
                         <div id="course-subtitle" class="course-subtitle">Curso 2025-2026</div>
                     </div>
                 </div>
-                <div id="app-version-chip" title="Versión activa de la aplicación (según el Service Worker)"><i class="fas fa-code-branch"></i> <span id="app-version-text">v…</span></div>
+                <div id="app-version-chip" title="Versión activa de la aplicación (según el Service Worker)"><i class="fas fa-code-branch"></i> <span id="app-version-text">v?</span></div>
                 <!-- BARRA DE USUARIO -->
                 <div id="user-bar" style="display: none;">
                     <i class="fas fa-user-circle" style="font-size: 1.2rem;"></i>
@@ -4889,14 +4889,27 @@
         // SERVICE WORKER REGISTRATION (PWA)
         // + CHIP DE VERSIÓN VIVA DEL BANNER
         // ================================================
+        // Fuentes de la versión (por orden de preferencia):
+        //   1. El propio Service Worker (mensaje GET_VERSION / APP_VERSION)
+        //   2. El nombre del caché vivo que mantiene el SW (caches.keys())
+        //   3. Lectura del archivo sw.js (parsea APP_VERSION o CACHE_NAME)
+        // La fuente 1 es la autoritativa: si llega más tarde, sobrescribe.
+        // ================================================
 
-        // Pinta la versión recibida del SW en el chip del banner
+        // ¿Se ha pintado ya una versión en el chip?
+        let appVersionReceived = false;
+
+        // Pinta la versión recibida en el chip del banner
         function setAppVersion(version) {
             const txt = document.getElementById('app-version-text');
-            if (txt && version) txt.textContent = version;
+            if (txt && version) {
+                txt.textContent = version;
+                appVersionReceived = true;
+                console.log('[AppVersion] Versión mostrada en el banner:', version);
+            }
         }
 
-        // Solicita la versión activa al SW (este responde con APP_VERSION)
+        // --- Fuente 1: preguntar directamente al Service Worker ---
         function requestAppVersionFromSW(registration) {
             try {
                 const sw = registration.active || registration.waiting || registration.installing;
@@ -4904,21 +4917,76 @@
             } catch (e) { /* sin versión disponible */ }
         }
 
-        // Plan B: si el SW no responde (p. ej. registro fallido), se lee
-        // sw.js de la red y se parsea su constante APP_VERSION.
+        // --- Fuente 2: el nombre del caché vivo del SW ---
+        // El SW mantiene un caché llamado "planes-programas-vX.Y": de ahí se
+        // extrae la versión realmente instalada sin depender de la red.
+        function compareVersions(a, b) {
+            const pa = a.replace(/^v/i, '').split('.').map(Number);
+            const pb = b.replace(/^v/i, '').split('.').map(Number);
+            for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+                const x = pa[i] || 0, y = pb[i] || 0;
+                if (x !== y) return x - y;
+            }
+            return 0;
+        }
+
+        function readVersionFromCacheNames() {
+            if (!('caches' in window)) return;
+            caches.keys().then((names) => {
+                const versions = [];
+                names.forEach((n) => {
+                    const m = n.match(/^planes-programas-(v[\w.\-]+)$/i);
+                    if (m) versions.push(m[1]);
+                });
+                if (versions.length) {
+                    versions.sort(compareVersions);
+                    setAppVersion(versions[versions.length - 1]);
+                }
+            }).catch(() => { /* sin cachés legibles */ });
+        }
+
+        // --- Fuente 3: leer sw.js y parsear su versión ---
+        // Se prueban la ruta absoluta de producción y, como respaldo, la
+        // relativa a index.html (pruebas locales u otra ruta de despliegue).
+        // Se acepta tanto el sw.js nuevo (APP_VERSION) como el antiguo
+        // (CACHE_NAME = 'planes-programas-v2.25').
         function fallbackReadVersionFromSWFile() {
-            fetch('/PlanesProgramasV2/sw.js', { cache: 'no-store' })
-                .then((res) => (res.ok ? res.text() : Promise.reject(new Error('HTTP ' + res.status))))
-                .then((text) => {
-                    const m = text.match(/APP_VERSION\s*=\s*['"]([^'"]+)['"]/);
-                    if (m) setAppVersion(m[1]);
-                })
-                .catch(() => { /* sin versión disponible */ });
+            const urls = ['/PlanesProgramasV2/sw.js', 'sw.js'];
+            const tryNext = (i) => {
+                if (i >= urls.length) return;
+                fetch(urls[i] + '?nocache=' + Date.now(), { cache: 'no-store' })
+                    .then((res) => (res.ok ? res.text() : Promise.reject(new Error('HTTP ' + res.status))))
+                    .then((text) => {
+                        // sw.js nuevo: const APP_VERSION = 'v2.25';
+                        let m = text.match(/APP_VERSION\s*=\s*['"]([^'"]+)['"]/);
+                        // sw.js antiguo: const CACHE_NAME = 'planes-programas-v2.25';
+                        if (!m) m = text.match(/planes-programas-(v[\w.\-]+)/i);
+                        if (m) setAppVersion(m[1]);
+                        else tryNext(i + 1);
+                    })
+                    .catch(() => tryNext(i + 1));
+            };
+            tryNext(0);
+        }
+
+        // Reintentos: cubren la primera carga tras un despliegue (el SW
+        // puede estar aún instalándose/activándose) alternando fuentes.
+        function scheduleVersionRetries(registration) {
+            const steps = [
+                [400,  () => readVersionFromCacheNames()],
+                [1500, () => requestAppVersionFromSW(registration)],
+                [3000, () => readVersionFromCacheNames()],
+                [4500, () => requestAppVersionFromSW(registration)],
+                [6000, () => fallbackReadVersionFromSWFile()]
+            ];
+            steps.forEach((step) => {
+                setTimeout(() => { if (!appVersionReceived) step[1](); }, step[0]);
+            });
         }
 
         if ('serviceWorker' in navigator) {
-            // 1) Recibir la versión: bien como respuesta a GET_VERSION, bien como
-            //    anuncio espontáneo del SW al activarse una versión nueva.
+            // Recibir la versión: bien como respuesta a GET_VERSION, bien como
+            // anuncio espontáneo del SW al activarse una versión nueva.
             navigator.serviceWorker.addEventListener('message', (event) => {
                 if (event.data && event.data.type === 'APP_VERSION' && event.data.version) {
                     setAppVersion(event.data.version);
@@ -4926,18 +4994,27 @@
             });
 
             window.addEventListener('load', () => {
+                // Registro con doble ruta: la absoluta de producción y, si
+                // fallara (p. ej. pruebas en otra ruta), la relativa a index.html.
                 navigator.serviceWorker.register('/PlanesProgramasV2/sw.js')
+                    .catch(() => navigator.serviceWorker.register('sw.js'))
                     .then((registration) => {
                         console.log('Service Worker registrado:', registration.scope);
                         // Pedir la versión activa para el chip del banner
                         requestAppVersionFromSW(registration);
-                        // Si a los 4 s el SW no ha respondido, leerla del archivo
-                        setTimeout(() => {
-                            const txt = document.getElementById('app-version-text');
-                            if (txt && txt.textContent.indexOf('…') !== -1) fallbackReadVersionFromSWFile();
-                        }, 4000);
+                        scheduleVersionRetries(registration);
                         // Check for updates on page load
                         registration.update();
+                        // Si el navegador encuentra una versión nueva del SW,
+                        // pedirle la versión al instalarse y al activarse.
+                        registration.addEventListener('updatefound', () => {
+                            const nw = registration.installing;
+                            if (nw) nw.addEventListener('statechange', () => {
+                                if (nw.state === 'installed' || nw.state === 'activated') {
+                                    requestAppVersionFromSW(registration);
+                                }
+                            });
+                        });
                     })
                     .catch((error) => {
                         console.error('Error al registrar Service Worker:', error);
@@ -4945,13 +5022,15 @@
                     });
             });
 
-            // 2) Actualización "en vivo": si se despliega una nueva versión del SW,
-            //    al tomar el control de la página (skipWaiting) se refresca el chip.
+            // Actualización "en vivo": si se despliega una nueva versión del
+            // SW, al tomar el control de la página (skipWaiting) se refresca
+            // el chip (el propio SW también anuncia su versión al activarse).
             navigator.serviceWorker.addEventListener('controllerchange', () => {
                 navigator.serviceWorker.ready.then(requestAppVersionFromSW).catch(() => {});
+                setTimeout(() => { if (!appVersionReceived) readVersionFromCacheNames(); }, 1000);
             });
         } else {
-            // Navegador sin soporte de SW: versión leída directamente del archivo
+            // Navegador sin soporte de SW: intentar leer la versión del archivo
             window.addEventListener('load', fallbackReadVersionFromSWFile);
         }
     </script>
