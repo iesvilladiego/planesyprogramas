@@ -220,9 +220,10 @@
 
         footer { text-align: center; margin-top: 50px; padding: 20px; color: var(--gray); font-size: 0.9rem; border-top: 1px solid #ddd; }
 
-        /* ----- ESTILOS PARA FIREBASE ----- */
-        #auth-status { background-color: rgba(0,0,0,0.3); padding: 6px 14px; border-radius: 30px; font-size: 0.85rem; font-weight: 600; display: flex; align-items: center; gap: 8px; }
-        #auth-status i { font-size: 0.9rem; }
+        /* ----- CHIP DE VERSIÓN VIVA (SERVICE WORKER) ----- */
+        #app-version-chip { background-color: rgba(0,0,0,0.3); padding: 6px 14px; border-radius: 30px; font-size: 0.85rem; font-weight: 600; display: flex; align-items: center; gap: 8px; white-space: nowrap; }
+        #app-version-chip i { font-size: 0.9rem; }
+        #app-version-chip #app-version-text { letter-spacing: 0.3px; }
 
         .interface-blocker {
             position: fixed; top: 0; left: 0; width: 100%; height: 100%;
@@ -584,7 +585,7 @@
                         <div id="course-subtitle" class="course-subtitle">Curso 2025-2026</div>
                     </div>
                 </div>
-                <div id="auth-status"><i class="fas fa-fire"></i> Firebase</div>
+                <div id="app-version-chip" title="Versión activa de la aplicación (según el Service Worker)"><i class="fas fa-code-branch"></i> <span id="app-version-text">v…</span></div>
                 <!-- BARRA DE USUARIO -->
                 <div id="user-bar" style="display: none;">
                     <i class="fas fa-user-circle" style="font-size: 1.2rem;"></i>
@@ -1471,9 +1472,10 @@
             document.getElementById('logout-btn').addEventListener('click', () => {
                 if (confirm('Seguro que deseas cerrar sesion?')) {
                     setUserLoggedOut();
-                    // Reset Firebase status
-                    const el = document.getElementById('auth-status');
-                    if (el) { el.innerHTML = '<i class="fas fa-fire"></i> Firebase'; el.style.background = 'rgba(0,0,0,0.3)'; }
+                    // El chip del banner muestra ahora la versión viva de la app (no el
+                    // estado de Firebase); solo se restablece el mensaje del formulario.
+                    const msg = document.getElementById('firebase-msg');
+                    if (msg) msg.innerHTML = 'Conectando con Firebase...';
                 }
             });
 
@@ -1808,18 +1810,15 @@
         // FUNCIONES DE GESTIÓN DE FIREBASE
         // ================================================
 
+        // Nota: el estado de conexión con Firebase se muestra únicamente en el
+        // mensaje del formulario de acceso (firebase-msg). El chip del banner que
+        // antes mostraba este estado exhibe ahora la versión viva de la aplicación,
+        // obtenida del Service Worker (ver bloque SERVICE WORKER REGISTRATION).
         function updateFirebaseStatus(isConnected) {
-            const el = document.getElementById('auth-status');
             const msg = document.getElementById('firebase-msg');
             if (isConnected) {
-                el.innerHTML = '<i class="fas fa-fire"></i> Firebase Conectado';
-                el.style.background = 'rgba(255, 160, 0, 0.9)';
-                el.style.color = 'white';
                 if (msg) msg.innerHTML = '<span style="color: var(--secondary);">Conectado a Firebase correctamente.</span>';
             } else {
-                el.innerHTML = '<i class="fas fa-fire"></i> Firebase Desconectado';
-                el.style.background = 'rgba(220, 53, 69, 0.9)';
-                el.style.color = 'white';
                 if (msg) msg.innerHTML = '<span style="color: var(--danger);">Error de conexión con Firebase.</span>';
             }
         }
@@ -4888,19 +4887,72 @@
     <script>
         // ================================================
         // SERVICE WORKER REGISTRATION (PWA)
+        // + CHIP DE VERSIÓN VIVA DEL BANNER
         // ================================================
+
+        // Pinta la versión recibida del SW en el chip del banner
+        function setAppVersion(version) {
+            const txt = document.getElementById('app-version-text');
+            if (txt && version) txt.textContent = version;
+        }
+
+        // Solicita la versión activa al SW (este responde con APP_VERSION)
+        function requestAppVersionFromSW(registration) {
+            try {
+                const sw = registration.active || registration.waiting || registration.installing;
+                if (sw) sw.postMessage({ type: 'GET_VERSION' });
+            } catch (e) { /* sin versión disponible */ }
+        }
+
+        // Plan B: si el SW no responde (p. ej. registro fallido), se lee
+        // sw.js de la red y se parsea su constante APP_VERSION.
+        function fallbackReadVersionFromSWFile() {
+            fetch('/PlanesProgramasV2/sw.js', { cache: 'no-store' })
+                .then((res) => (res.ok ? res.text() : Promise.reject(new Error('HTTP ' + res.status))))
+                .then((text) => {
+                    const m = text.match(/APP_VERSION\s*=\s*['"]([^'"]+)['"]/);
+                    if (m) setAppVersion(m[1]);
+                })
+                .catch(() => { /* sin versión disponible */ });
+        }
+
         if ('serviceWorker' in navigator) {
+            // 1) Recibir la versión: bien como respuesta a GET_VERSION, bien como
+            //    anuncio espontáneo del SW al activarse una versión nueva.
+            navigator.serviceWorker.addEventListener('message', (event) => {
+                if (event.data && event.data.type === 'APP_VERSION' && event.data.version) {
+                    setAppVersion(event.data.version);
+                }
+            });
+
             window.addEventListener('load', () => {
                 navigator.serviceWorker.register('/PlanesProgramasV2/sw.js')
                     .then((registration) => {
                         console.log('Service Worker registrado:', registration.scope);
+                        // Pedir la versión activa para el chip del banner
+                        requestAppVersionFromSW(registration);
+                        // Si a los 4 s el SW no ha respondido, leerla del archivo
+                        setTimeout(() => {
+                            const txt = document.getElementById('app-version-text');
+                            if (txt && txt.textContent.indexOf('…') !== -1) fallbackReadVersionFromSWFile();
+                        }, 4000);
                         // Check for updates on page load
                         registration.update();
                     })
                     .catch((error) => {
                         console.error('Error al registrar Service Worker:', error);
+                        fallbackReadVersionFromSWFile();
                     });
             });
+
+            // 2) Actualización "en vivo": si se despliega una nueva versión del SW,
+            //    al tomar el control de la página (skipWaiting) se refresca el chip.
+            navigator.serviceWorker.addEventListener('controllerchange', () => {
+                navigator.serviceWorker.ready.then(requestAppVersionFromSW).catch(() => {});
+            });
+        } else {
+            // Navegador sin soporte de SW: versión leída directamente del archivo
+            window.addEventListener('load', fallbackReadVersionFromSWFile);
         }
     </script>
 </body>
